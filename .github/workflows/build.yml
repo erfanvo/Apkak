@@ -1,0 +1,45 @@
+name: Build Android APK
+on:
+  push:
+    branches: [ main ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          
+      - name: Install Dependencies
+        run: npm install
+        
+      - name: Generate Native Android Code
+        run: npx expo prebuild -p android --no-install
+        
+      - name: Force Single Architecture (Drastic Size Reduction)
+        run: echo "reactNativeArchitectures=arm64-v8a" >> android/gradle.properties
+          
+      - name: Inject Missing Android Resources
+        run: |
+          mkdir -p android/app/src/main/res/values
+          echo '<?xml version="1.0" encoding="utf-8"?><resources><color name="splashscreen_background">#FFFFFF</color><color name="colorPrimary">#2c3e50</color><color name="colorPrimaryDark">#1a252f</color><color name="colorAccent">#2c3e50</color></resources>' > android/app/src/main/res/values/colors.xml
+          
+      - name: Build APK
+        working-directory: android
+        run: ./gradlew assembleRelease
+        
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LinkMaker-App-Optimized
+          path: android/app/build/outputs/apk/release/*.apk
