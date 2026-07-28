@@ -1,0 +1,16 @@
+{
+  "name": "linkmakerapp",
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android"
+  },
+  "dependencies": {
+    "expo": "~51.0.14",
+    "react": "18.2.0",
+    "react-native": "0.74.2",
+    "react-native-webview": "13.8.6",
+    "@react-native-cookies/cookies": "6.2.1"
+  },
+  "private": true
+}
