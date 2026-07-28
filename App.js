@@ -33,52 +33,65 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
 
     setState(() {
       _isProcessing = true;
-      _statusMessage = 'در حال دریافت اطلاعات...';
+      _statusMessage = 'در حال دریافت اطلاعات از سرور...';
     });
 
     try {
       final response = await http.get(Uri.parse(endpointUrl));
-      if (response.statusCode != 200) throw Exception('خطا در دریافت لینک.');
+      if (response.statusCode != 200) {
+        throw Exception('لینک نامعتبر است یا منقضی شده.');
+      }
       
       final Map<String, dynamic> data = json.decode(response.body);
 
-      setState(() => _statusMessage = 'در حال تنظیم کوکی‌ها...');
+      setState(() => _statusMessage = 'در حال همگام‌سازی کوکی‌ها...');
 
       final CookieManager cookieManager = CookieManager.instance();
       await cookieManager.deleteAllCookies();
 
-      // ۱. استخراج امن LocalStorage
+      // استخراج قطعی و بدون خطای تایپ (Type Error) برای LocalStorage
       List<dynamic> localData = [];
-      if (data['origins'] != null && (data['origins'] as List).isNotEmpty) {
-        var originsList = data['origins'] as List;
-        var matchedOrigin = originsList.firstWhere(
-          (o) => o['origin'] != null && o['origin'].toString().contains('okala.com'),
-          orElse: () => originsList[0],
-        );
-        localData = matchedOrigin['localStorage'] ?? [];
+      if (data['origins'] != null && data['origins'] is List && (data['origins'] as List).isNotEmpty) {
+        List<dynamic> originsList = data['origins'];
+        dynamic matchedOrigin = originsList[0]; // پیش‌فرض
+        
+        // پیدا کردن ایمنِ اریجین اکالا
+        for (var o in originsList) {
+          if (o is Map && o['origin'] != null && o['origin'].toString().contains('okala.com')) {
+            matchedOrigin = o;
+            break;
+          }
+        }
+        
+        if (matchedOrigin is Map && matchedOrigin['localStorage'] != null) {
+          localData = matchedOrigin['localStorage'];
+        }
       }
 
-      // ۲. تزریق کوکی‌ها (دقیقاً مثل اکستنشن با sameSite: None)
+      // تزریق دقیق کوکی‌ها با پارامترهای ایمنِ مرورگر
       List<dynamic> cookies = data['cookies'] ?? [];
       for (var c in cookies) {
+        String domain = c['domain'] ?? ".okala.com";
         await cookieManager.setCookie(
           url: WebUri("https://www.okala.com"),
           name: c['name'],
           value: c['value'],
-          domain: c['domain'] ?? ".okala.com",
+          domain: domain,
           path: c['path'] ?? "/",
-          isSecure: true,
+          isSecure: c['secure'] ?? true,
           sameSite: HTTPCookieSameSitePolicy.NONE,
         );
       }
 
-      setState(() => _statusMessage = 'آماده‌سازی مرورگر...');
+      setState(() => _statusMessage = 'آماده‌سازی مرورگر امن...');
 
       if (!mounted) return;
       
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (context) => SecureBrowserScreen(localData: localData)),
+        MaterialPageRoute(
+          builder: (context) => SecureBrowserScreen(localData: localData),
+        ),
       ).then((_) {
         setState(() {
           _isProcessing = false;
@@ -139,7 +152,7 @@ class _HyperLinkScreenState extends State<HyperLinkScreen> {
                 ),
                 if (_statusMessage.isNotEmpty) ...[
                   const SizedBox(height: 16),
-                  Text(_statusMessage, style: TextStyle(color: Colors.green, fontWeight: FontWeight.w500), textAlign: TextAlign.center),
+                  Text(_statusMessage, style: TextStyle(color: _statusMessage.contains('خطا') ? Colors.red : Colors.green, fontWeight: FontWeight.w500), textAlign: TextAlign.center),
                 ]
               ],
             ),
@@ -165,10 +178,10 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // تبدیل دیتا برای جلوگیری از خرابی کاراکترها
+    // کدگذاری داده‌ها برای جلوگیری از تداخل رشته‌های جاوااسکریپت
     final String base64Data = base64Encode(utf8.encode(jsonEncode(widget.localData)));
 
-    // این دقیقاً همان اسکریپت جاوااسکریپت اکستنشن شماست
+    // رفرش کردن همان صفحه اصلی به جای رفتن به پروفایل (دقیقاً مشابه اکستنشن کروم)
     final String injectionJs = """
       try {
         var decodedData = decodeURIComponent(escape(window.atob('$base64Data')));
@@ -178,8 +191,9 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
         items.forEach(item => {
           localStorage.setItem(item.name, item.value);
         });
-        // انتقال به پروفایل دقیقاً مثل اکستنشن
-        window.location.replace('https://www.okala.com/profile');
+        
+        // رفرش صفحه برای هیدراته شدن سایت اکالا بدون فریز
+        window.location.replace('https://www.okala.com/');
       } catch(e) {
         console.error("Storage Error:", e);
       }
@@ -194,23 +208,21 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
       body: Stack(
         children: [
           InAppWebView(
-            // اول به صورت مخفیانه ریشه سایت رو باز می‌کنیم تا کش و کوکی‌ها جا بیفتن
             initialUrlRequest: URLRequest(url: WebUri("https://www.okala.com/")),
             initialSettings: InAppWebViewSettings(
               javaScriptEnabled: true,
               domStorageEnabled: true,
               thirdPartyCookiesEnabled: true,
+              clearCache: false,
             ),
             onLoadStop: (controller, url) async {
-              String currentUrl = url.toString();
-              
-              // مرحله اول: سایت لود شده، حالا وقت تزریق دیتا و رفرش کردنه
-              if (!_hasInjectedData && currentUrl.contains("okala.com")) {
-                _hasInjectedData = true; // جلوگیری از لوپ بی‌نهایت
+              // مرحله اول: سایت لود شده، زمان تزریق دیتا و رفرش است
+              if (!_hasInjectedData) {
+                _hasInjectedData = true; 
                 await controller.evaluateJavascript(source: injectionJs);
               } 
-              // مرحله دوم: سایت رفرش شده و روی پروفایل لود شده، پس صفحه رو نمایش بده
-              else if (_hasInjectedData && currentUrl.contains("profile")) {
+              // مرحله دوم: سایت با دیتای جدید روی ریشه رفرش شده، پس پرده لودینگ برداشته شود
+              else {
                 setState(() {
                   _isInjecting = false;
                 });
@@ -218,7 +230,7 @@ class _SecureBrowserScreenState extends State<SecureBrowserScreen> {
             },
           ),
           
-          // پرده لودینگ تا زمانی که پروسه تزریق و رفرش تموم نشده باشه
+          // نمایش لودینگ تا پایان عملیات رفرشِ پشت صحنه
           if (_isInjecting)
             Container(
               color: Colors.white,
