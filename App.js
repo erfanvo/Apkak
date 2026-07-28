@@ -1,14 +1,14 @@
 import React, { useState, useRef } from 'react';
-import { View, TextInput, StyleSheet, Text, ActivityIndicator, TouchableOpacity, SafeAreaView } from 'react-native';
+import { View, TextInput, StyleSheet, Text, ActivityIndicator, TouchableOpacity, SafeAreaView, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
+import CookieManager from '@react-native-cookies/cookies';
 
 const App = () => {
   const [link, setLink] = useState('');
   const [status, setStatus] = useState('');
   const [isInjecting, setIsInjecting] = useState(false);
-  
-  // به جای آدرس سایت، کل صفحه واسط را در این متغیر ذخیره می‌کنیم
-  const [htmlContent, setHtmlContent] = useState('');
+  const [loadWebView, setLoadWebView] = useState(false);
+  const [injectedJS, setInjectedJS] = useState('');
   const webviewRef = useRef(null);
 
   const handleInject = async () => {
@@ -18,8 +18,8 @@ const App = () => {
     }
 
     setIsInjecting(true);
-    setStatus('⏳ در حال دریافت فایل JSON...');
-    setHtmlContent('');
+    setStatus('⏳ در حال تحلیل ساختار JSON ربات...');
+    setLoadWebView(false);
 
     try {
       const response = await fetch(link);
@@ -29,79 +29,73 @@ const App = () => {
         throw new Error('ساختار داده نامعتبر است.');
       }
 
-      setStatus('⏳ در حال ساخت تونل امن ورود...');
+      setStatus('⏳ در حال تزریق بومی کوکی‌ها در شبکه اندروید...');
 
-      // استخراج کوکی‌ها
-      let cookies = [];
-      if (data.cookies) {
-          cookies = data.cookies;
+      // ۱. پاکسازی کامل کوکی‌های پیشین سیستم‌عامل
+      await CookieManager.clearAll();
+
+      const lsItems = (data.origins && data.origins.length > 0 && data.origins[0].localStorage) ? data.origins[0].localStorage : [];
+
+      // ۲. استخراج و تزریق هوشمند کوکی‌ها بر اساس فایل جدید
+      if (data.cookies && data.cookies.length > 0) {
+          for (let cookie of data.cookies) {
+              await CookieManager.set('https://www.okala.com', {
+                  name: cookie.name,
+                  value: cookie.value,
+                  domain: cookie.domain || '.okala.com',
+                  path: cookie.path || '/',
+                  secure: true,
+              });
+          }
       } else {
-          const ls = data.origins?.[0]?.localStorage || [];
-          const t = ls.find(x => x.name === 'tokenMS')?.value;
-          const r = ls.find(x => x.name === 'refresh_token')?.value;
-          if(t) cookies.push({name: 'tokenMS', value: t});
-          if(r) cookies.push({name: 'refresh_token', value: r});
+          // در فایلی که فرستادید، آرایه کوکی وجود ندارد و توکن‌ها باید از داخل لوکال استوریج استخراج و تبدیل به کوکی شوند
+          const t = lsItems.find(x => x.name === 'tokenMS')?.value;
+          const r = lsItems.find(x => x.name === 'refresh_token')?.value;
+
+          if (t) {
+              await CookieManager.set('https://www.okala.com', {
+                  name: 'tokenMS', value: t, domain: '.okala.com', path: '/', secure: true
+              });
+          }
+          if (r) {
+              await CookieManager.set('https://www.okala.com', {
+                  name: 'refresh_token', value: r, domain: '.okala.com', path: '/', secure: true
+              });
+          }
       }
 
-      // استخراج حافظه محلی
-      const lsItems = data.origins?.[0]?.localStorage || [];
+      // اجبار سیستم‌عامل اندروید به ثبت فوری کوکی‌ها قبل از باز شدن مرورگر
+      if (Platform.OS === 'android') {
+          await CookieManager.flush();
+      }
 
-      // ساخت یک صفحه HTML اختصاصی که خودش وظیفه تزریق را بر عهده دارد
-      const injectionHtml = `
-        <!DOCTYPE html>
-        <html lang="fa" dir="rtl">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <style>
-            body { background-color: #f9f9f9; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: Tahoma, sans-serif; margin: 0; }
-            .loader { border: 4px solid #f3f3f3; border-top: 4px solid #d81b60; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
-            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-            p { margin-top: 15px; font-weight: bold; color: #555; }
-            .container { text-align: center; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-             <div class="loader" style="margin: 0 auto;"></div>
-             <p>در حال همگام‌سازی اکانت...</p>
-          </div>
-          <script>
-            try {
-              // ۱. پاکسازی کامل مرورگر
-              window.localStorage.clear();
-              window.sessionStorage.clear();
+      // ۳. کلید طلایی: تبدیل امن آبجکت به رشته برای جلوگیری از خطای نگارشی (سینتکس) جاوااسکریپت در مرورگر
+      const safeLsData = JSON.stringify(lsItems);
 
-              // ۲. تزریق امن کوکی‌ها مستقیماً در مرورگر
-              var cookiesData = ${JSON.stringify(cookies)};
-              for (var i = 0; i < cookiesData.length; i++) {
-                 var c = cookiesData[i];
-                 document.cookie = c.name + "=" + c.value + "; domain=.okala.com; path=/; secure;";
-              }
-
-              // ۳. تزریق امن دیتای پیچیده بدون خطای سینتکس
-              var lsData = ${JSON.stringify(lsItems)};
-              for (var j = 0; j < lsData.length; j++) {
-                 window.localStorage.setItem(lsData[j].name, lsData[j].value);
-              }
-
-              // ۴. شلیک مستقیم به سایت مقصد (با این روش سایت اکالا متوجه هیچ تزریقی نمی‌شود)
-              setTimeout(function() {
-                 window.location.replace("https://www.okala.com/profile");
-              }, 600);
-
-            } catch(e) {
-              document.body.innerHTML = "خطا در سیستم انتقال: " + e.message;
-            }
-          </script>
-        </body>
-        </html>
+      const jsCode = `
+        try {
+          var items = ${safeLsData};
+          window.localStorage.clear();
+          window.sessionStorage.clear();
+          
+          for (var i = 0; i < items.length; i++) {
+            window.localStorage.setItem(items[i].name, items[i].value);
+          }
+        } catch(e) {
+          console.error("LS Error", e);
+        }
+        true;
       `;
-
-      // لود کردن صفحه ساخته شده در وب‌ویو
-      setHtmlContent(injectionHtml);
-      setIsInjecting(false);
-      setStatus('');
+      
+      setInjectedJS(jsCode);
+      setStatus('✅ اطلاعات با موفقیت پردازش شد...');
+      
+      // باز کردن مستقیم صفحه پروفایل پس از آماده‌سازی داده‌ها
+      setTimeout(() => {
+        setLoadWebView(true);
+        setIsInjecting(false);
+        setStatus('');
+      }, 800);
 
     } catch (error) {
       setStatus('❌ خطا: ' + error.message);
@@ -110,13 +104,19 @@ const App = () => {
   };
 
   const closeWebView = () => {
-    setHtmlContent('');
+    setLoadWebView(false);
     setLink('');
+  };
+
+  const reloadWebView = () => {
+    if (webviewRef.current) {
+      webviewRef.current.reload();
+    }
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      {!htmlContent ? (
+      {!loadWebView ? (
         <View style={styles.centerWrapper}>
           <View style={styles.card}>
             <View style={styles.iconPlaceholder}>
@@ -160,15 +160,20 @@ const App = () => {
               <Text style={styles.headerButtonText}>✕ خروج</Text>
             </TouchableOpacity>
             <Text style={styles.headerTitle}>مرورگر اکالا</Text>
-            <View style={{width: 50}} />
+            <TouchableOpacity onPress={reloadWebView} style={styles.headerButton}>
+              <Text style={styles.headerButtonText}>↻ رفرش</Text>
+            </TouchableOpacity>
           </View>
 
           <WebView
             ref={webviewRef}
-            // کلید طلایی اینجاست: ما کدهای HTML خودمان را به عنوان سایت اصلی جا می‌زنیم
-            source={{ html: htmlContent, baseUrl: 'https://www.okala.com/' }}
+            // لود سایت واقعی برای انتقال بدون قطعی کوکی‌ها و استوریج
+            source={{ uri: 'https://www.okala.com/profile' }}
+            // این دستور محتوای استوریج را قبل از بالا آمدن سایت اکالا در سیستم می‌نشاند
+            injectedJavaScriptBeforeContentLoaded={injectedJS}
             sharedCookiesEnabled={true}
             thirdPartyCookiesEnabled={true}
+            cacheEnabled={false}
             style={{ flex: 1 }}
           />
         </View>
