@@ -1,14 +1,14 @@
 import React, { useState, useRef } from 'react';
-import { View, TextInput, StyleSheet, Text, ActivityIndicator, TouchableOpacity, SafeAreaView, Platform } from 'react-native';
+import { View, TextInput, StyleSheet, Text, ActivityIndicator, TouchableOpacity, SafeAreaView } from 'react-native';
 import { WebView } from 'react-native-webview';
-import CookieManager from '@react-native-cookies/cookies';
 
 const App = () => {
   const [link, setLink] = useState('');
   const [status, setStatus] = useState('');
   const [isInjecting, setIsInjecting] = useState(false);
-  const [loadWebView, setLoadWebView] = useState(false);
-  const [injectedJS, setInjectedJS] = useState('');
+  
+  // به جای آدرس سایت، کل صفحه واسط را در این متغیر ذخیره می‌کنیم
+  const [htmlContent, setHtmlContent] = useState('');
   const webviewRef = useRef(null);
 
   const handleInject = async () => {
@@ -18,8 +18,8 @@ const App = () => {
     }
 
     setIsInjecting(true);
-    setStatus('⏳ در حال دریافت داده‌های ربات...');
-    setLoadWebView(false);
+    setStatus('⏳ در حال دریافت فایل JSON...');
+    setHtmlContent('');
 
     try {
       const response = await fetch(link);
@@ -29,57 +29,79 @@ const App = () => {
         throw new Error('ساختار داده نامعتبر است.');
       }
 
-      setStatus('⏳ در حال تزریق بومی کوکی‌ها...');
+      setStatus('⏳ در حال ساخت تونل امن ورود...');
 
-      // پاکسازی کامل سیستم عامل از سشن‌های قبلی
-      await CookieManager.clearAll();
-
-      // ۱. تزریق دقیق کوکی‌ها مطابق با دامنه اصلی موجود در فایل JSON
-      if (data.cookies && data.cookies.length > 0) {
-          for (let cookie of data.cookies) {
-              await CookieManager.set('https://www.okala.com', {
-                  name: cookie.name,
-                  value: cookie.value,
-                  domain: cookie.domain, // استفاده از دامنه دقیق (www یا بدون www)
-                  path: cookie.path || '/',
-                  secure: cookie.secure !== false,
-              });
-          }
+      // استخراج کوکی‌ها
+      let cookies = [];
+      if (data.cookies) {
+          cookies = data.cookies;
+      } else {
+          const ls = data.origins?.[0]?.localStorage || [];
+          const t = ls.find(x => x.name === 'tokenMS')?.value;
+          const r = ls.find(x => x.name === 'refresh_token')?.value;
+          if(t) cookies.push({name: 'tokenMS', value: t});
+          if(r) cookies.push({name: 'refresh_token', value: r});
       }
 
-      // اجبار اندروید به ثبت فوری کوکی‌ها پیش از باز شدن وب‌ویو
-      if (Platform.OS === 'android') {
-          await CookieManager.flush();
-      }
+      // استخراج حافظه محلی
+      const lsItems = data.origins?.[0]?.localStorage || [];
 
-      // ۲. تزریق امن حافظه محلی (برطرف کننده خطای گیر کردن در صفحه)
-      const lsItems = (data.origins && data.origins.length > 0 && data.origins[0].localStorage) ? data.origins[0].localStorage : [];
-      
-      // تبدیل آبجکت به رشته استاندارد جاوااسکریپت برای جلوگیری از تداخل کاراکترها (حل مشکل persist:root)
-      const safeLsData = JSON.stringify(lsItems);
+      // ساخت یک صفحه HTML اختصاصی که خودش وظیفه تزریق را بر عهده دارد
+      const injectionHtml = `
+        <!DOCTYPE html>
+        <html lang="fa" dir="rtl">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <style>
+            body { background-color: #f9f9f9; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: Tahoma, sans-serif; margin: 0; }
+            .loader { border: 4px solid #f3f3f3; border-top: 4px solid #d81b60; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+            p { margin-top: 15px; font-weight: bold; color: #555; }
+            .container { text-align: center; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+             <div class="loader" style="margin: 0 auto;"></div>
+             <p>در حال همگام‌سازی اکانت...</p>
+          </div>
+          <script>
+            try {
+              // ۱. پاکسازی کامل مرورگر
+              window.localStorage.clear();
+              window.sessionStorage.clear();
 
-      const jsCode = `
-        try {
-          var items = ${safeLsData};
-          window.localStorage.clear();
-          window.sessionStorage.clear();
-          for (var i = 0; i < items.length; i++) {
-            window.localStorage.setItem(items[i].name, items[i].value);
-          }
-        } catch(e) {
-          console.error("Local Storage Injection Failed:", e);
-        }
-        true;
+              // ۲. تزریق امن کوکی‌ها مستقیماً در مرورگر
+              var cookiesData = ${JSON.stringify(cookies)};
+              for (var i = 0; i < cookiesData.length; i++) {
+                 var c = cookiesData[i];
+                 document.cookie = c.name + "=" + c.value + "; domain=.okala.com; path=/; secure;";
+              }
+
+              // ۳. تزریق امن دیتای پیچیده بدون خطای سینتکس
+              var lsData = ${JSON.stringify(lsItems)};
+              for (var j = 0; j < lsData.length; j++) {
+                 window.localStorage.setItem(lsData[j].name, lsData[j].value);
+              }
+
+              // ۴. شلیک مستقیم به سایت مقصد (با این روش سایت اکالا متوجه هیچ تزریقی نمی‌شود)
+              setTimeout(function() {
+                 window.location.replace("https://www.okala.com/profile");
+              }, 600);
+
+            } catch(e) {
+              document.body.innerHTML = "خطا در سیستم انتقال: " + e.message;
+            }
+          </script>
+        </body>
+        </html>
       `;
-      
-      setInjectedJS(jsCode);
-      setStatus('✅ اطلاعات با موفقیت پردازش شد...');
-      
-      setTimeout(() => {
-        setLoadWebView(true);
-        setIsInjecting(false);
-        setStatus('');
-      }, 600);
+
+      // لود کردن صفحه ساخته شده در وب‌ویو
+      setHtmlContent(injectionHtml);
+      setIsInjecting(false);
+      setStatus('');
 
     } catch (error) {
       setStatus('❌ خطا: ' + error.message);
@@ -88,13 +110,13 @@ const App = () => {
   };
 
   const closeWebView = () => {
-    setLoadWebView(false);
+    setHtmlContent('');
     setLink('');
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      {!loadWebView ? (
+      {!htmlContent ? (
         <View style={styles.centerWrapper}>
           <View style={styles.card}>
             <View style={styles.iconPlaceholder}>
@@ -143,11 +165,10 @@ const App = () => {
 
           <WebView
             ref={webviewRef}
-            source={{ uri: 'https://www.okala.com/profile' }}
-            injectedJavaScriptBeforeContentLoaded={injectedJS}
+            // کلید طلایی اینجاست: ما کدهای HTML خودمان را به عنوان سایت اصلی جا می‌زنیم
+            source={{ html: htmlContent, baseUrl: 'https://www.okala.com/' }}
             sharedCookiesEnabled={true}
             thirdPartyCookiesEnabled={true}
-            cacheEnabled={false}
             style={{ flex: 1 }}
           />
         </View>
