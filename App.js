@@ -8,7 +8,9 @@ const App = () => {
   const [status, setStatus] = useState('');
   const [isInjecting, setIsInjecting] = useState(false);
   const [loadWebView, setLoadWebView] = useState(false);
+  
   const [injectedJS, setInjectedJS] = useState('');
+  const [cookieHeader, setCookieHeader] = useState(''); // برای ارسال کوکی در درخواست اولیه
   const webviewRef = useRef(null);
 
   const handleInject = async () => {
@@ -18,7 +20,7 @@ const App = () => {
     }
 
     setIsInjecting(true);
-    setStatus('⏳ در حال تحلیل ساختار JSON ربات...');
+    setStatus('⏳ در حال تحلیل داده‌ها...');
     setLoadWebView(false);
 
     try {
@@ -29,73 +31,70 @@ const App = () => {
         throw new Error('ساختار داده نامعتبر است.');
       }
 
-      setStatus('⏳ در حال تزریق بومی کوکی‌ها در شبکه اندروید...');
+      setStatus('⏳ در حال تنظیم هسته مرورگر...');
 
-      // ۱. پاکسازی کامل کوکی‌های پیشین سیستم‌عامل
       await CookieManager.clearAll();
 
       const lsItems = (data.origins && data.origins.length > 0 && data.origins[0].localStorage) ? data.origins[0].localStorage : [];
 
-      // ۲. استخراج و تزریق هوشمند کوکی‌ها بر اساس فایل جدید
+      let extractedCookies = [];
       if (data.cookies && data.cookies.length > 0) {
-          for (let cookie of data.cookies) {
-              await CookieManager.set('https://www.okala.com', {
-                  name: cookie.name,
-                  value: cookie.value,
-                  domain: cookie.domain || '.okala.com',
-                  path: cookie.path || '/',
-                  secure: true,
-              });
-          }
+          extractedCookies = data.cookies;
       } else {
-          // در فایلی که فرستادید، آرایه کوکی وجود ندارد و توکن‌ها باید از داخل لوکال استوریج استخراج و تبدیل به کوکی شوند
+          // در صورت عدم وجود آرایه کوکی، توکن‌ها از استوریج بیرون کشیده می‌شوند
           const t = lsItems.find(x => x.name === 'tokenMS')?.value;
           const r = lsItems.find(x => x.name === 'refresh_token')?.value;
-
-          if (t) {
-              await CookieManager.set('https://www.okala.com', {
-                  name: 'tokenMS', value: t, domain: '.okala.com', path: '/', secure: true
-              });
-          }
-          if (r) {
-              await CookieManager.set('https://www.okala.com', {
-                  name: 'refresh_token', value: r, domain: '.okala.com', path: '/', secure: true
-              });
-          }
+          if (t) extractedCookies.push({ name: 'tokenMS', value: t, domain: '.okala.com', path: '/' });
+          if (r) extractedCookies.push({ name: 'refresh_token', value: r, domain: '.okala.com', path: '/' });
       }
 
-      // اجبار سیستم‌عامل اندروید به ثبت فوری کوکی‌ها قبل از باز شدن مرورگر
+      // ۱. ست کردن کوکی‌ها در لایه بومی اندروید
+      for (let c of extractedCookies) {
+          await CookieManager.set('https://www.okala.com', {
+              name: c.name,
+              value: c.value,
+              domain: c.domain || '.okala.com',
+              path: c.path || '/',
+              secure: true,
+          });
+      }
+
       if (Platform.OS === 'android') {
           await CookieManager.flush();
       }
 
-      // ۳. کلید طلایی: تبدیل امن آبجکت به رشته برای جلوگیری از خطای نگارشی (سینتکس) جاوااسکریپت در مرورگر
+      // ۲. ساخت هدر اختصاصی کوکی (حل مشکل رندر شدن به عنوان مهمان و نیامدن اسم)
+      const headerStr = extractedCookies.map(c => `${c.name}=${c.value}`).join('; ');
+      setCookieHeader(headerStr);
+
+      // ۳. اسکریپت تزریق استوریج و کوکی‌ها به داخل DOM
       const safeLsData = JSON.stringify(lsItems);
+      const cookieScript = extractedCookies.map(c => `document.cookie = "${c.name}=${c.value}; domain=${c.domain || '.okala.com'}; path=${c.path || '/'}; secure;";`).join('\n');
 
       const jsCode = `
         try {
+          ${cookieScript}
+          
           var items = ${safeLsData};
           window.localStorage.clear();
           window.sessionStorage.clear();
-          
           for (var i = 0; i < items.length; i++) {
             window.localStorage.setItem(items[i].name, items[i].value);
           }
         } catch(e) {
-          console.error("LS Error", e);
+          console.error("Injection Error", e);
         }
         true;
       `;
       
       setInjectedJS(jsCode);
-      setStatus('✅ اطلاعات با موفقیت پردازش شد...');
+      setStatus('✅ آماده ورود به اکانت...');
       
-      // باز کردن مستقیم صفحه پروفایل پس از آماده‌سازی داده‌ها
       setTimeout(() => {
         setLoadWebView(true);
         setIsInjecting(false);
         setStatus('');
-      }, 800);
+      }, 500);
 
     } catch (error) {
       setStatus('❌ خطا: ' + error.message);
@@ -167,13 +166,16 @@ const App = () => {
 
           <WebView
             ref={webviewRef}
-            // لود سایت واقعی برای انتقال بدون قطعی کوکی‌ها و استوریج
-            source={{ uri: 'https://www.okala.com/profile' }}
-            // این دستور محتوای استوریج را قبل از بالا آمدن سایت اکالا در سیستم می‌نشاند
+            source={{ 
+              uri: 'https://www.okala.com/profile',
+              headers: { 'Cookie': cookieHeader } // ارسال کوکی در لحظه اول برای گرفتن نام کاربری
+            }}
             injectedJavaScriptBeforeContentLoaded={injectedJS}
             sharedCookiesEnabled={true}
             thirdPartyCookiesEnabled={true}
-            cacheEnabled={false}
+            domStorageEnabled={true} // باز کردن قفل حافظه جهت رفع مشکل گیر کردن دکمه‌ها
+            javaScriptEnabled={true}
+            cacheEnabled={true}
             style={{ flex: 1 }}
           />
         </View>
