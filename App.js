@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
-import { View, TextInput, StyleSheet, Text, ActivityIndicator, TouchableOpacity, SafeAreaView } from 'react-native';
+import { View, TextInput, StyleSheet, Text, ActivityIndicator, TouchableOpacity, SafeAreaView, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
+import CookieManager from '@react-native-cookies/cookies';
 
 const App = () => {
   const [link, setLink] = useState('');
@@ -17,7 +18,7 @@ const App = () => {
     }
 
     setIsInjecting(true);
-    setStatus('⏳ در حال دریافت اطلاعات از سرور...');
+    setStatus('⏳ در حال دریافت داده‌های ربات...');
     setLoadWebView(false);
 
     try {
@@ -28,58 +29,57 @@ const App = () => {
         throw new Error('ساختار داده نامعتبر است.');
       }
 
-      setStatus('⏳ در حال همگام‌سازی با منطق افزونه...');
+      setStatus('⏳ در حال تزریق بومی کوکی‌ها...');
 
-      let tokenMsValue = '';
-      let refreshValue = '';
-      let localStorageItems = [];
-      
-      // استخراج LocalStorage
-      if (data.origins && data.origins.length > 0 && data.origins[0].localStorage) {
-         localStorageItems = data.origins[0].localStorage;
-         const tokenObj = localStorageItems.find(x => x.name === 'tokenMS');
-         if (tokenObj) tokenMsValue = tokenObj.value;
-         const refreshObj = localStorageItems.find(x => x.name === 'refresh_token');
-         if (refreshObj) refreshValue = refreshObj.value;
-      }
+      // پاکسازی کامل سیستم عامل از سشن‌های قبلی
+      await CookieManager.clearAll();
 
-      // پشتیبانی کامل از آرایه کوکی‌ها (دقیقاً مشابه لاجیک popup.js شما)
-      let cookieScript = '';
+      // ۱. تزریق دقیق کوکی‌ها مطابق با دامنه اصلی موجود در فایل JSON
       if (data.cookies && data.cookies.length > 0) {
-          cookieScript = data.cookies.map(c => `document.cookie = "${c.name}=${c.value}; domain=.okala.com; path=/; secure;";`).join('\n');
-      } else {
-          if (tokenMsValue) cookieScript += `document.cookie = "tokenMS=${tokenMsValue}; domain=.okala.com; path=/; secure;";\n`;
-          if (refreshValue) cookieScript += `document.cookie = "refresh_token=${refreshValue}; domain=.okala.com; path=/; secure;";\n`;
+          for (let cookie of data.cookies) {
+              await CookieManager.set('https://www.okala.com', {
+                  name: cookie.name,
+                  value: cookie.value,
+                  domain: cookie.domain, // استفاده از دامنه دقیق (www یا بدون www)
+                  path: cookie.path || '/',
+                  secure: cookie.secure !== false,
+              });
+          }
       }
 
-      // اسکریپت جادویی: بررسی می‌کند اگر در مسیر setup هستیم، تزریق را انجام داده و ری‌دایرکت کند
+      // اجبار اندروید به ثبت فوری کوکی‌ها پیش از باز شدن وب‌ویو
+      if (Platform.OS === 'android') {
+          await CookieManager.flush();
+      }
+
+      // ۲. تزریق امن حافظه محلی (برطرف کننده خطای گیر کردن در صفحه)
+      const lsItems = (data.origins && data.origins.length > 0 && data.origins[0].localStorage) ? data.origins[0].localStorage : [];
+      
+      // تبدیل آبجکت به رشته استاندارد جاوااسکریپت برای جلوگیری از تداخل کاراکترها (حل مشکل persist:root)
+      const safeLsData = JSON.stringify(lsItems);
+
       const jsCode = `
-        if (window.location.href.includes('authSetup=true')) {
-          // ۱. پاکسازی
+        try {
+          var items = ${safeLsData};
           window.localStorage.clear();
           window.sessionStorage.clear();
-          
-          // ۲. تزریق کوکی‌ها
-          ${cookieScript}
-          
-          // ۳. تزریق حافظه محلی
-          ${localStorageItems.map(item => `window.localStorage.setItem('${item.name}', '${item.value}');`).join('\n')}
-          
-          // ۴. شلیک مستقیم به پروفایل برای جلوگیری از کرش سایت
-          window.location.replace('https://www.okala.com/profile');
+          for (var i = 0; i < items.length; i++) {
+            window.localStorage.setItem(items[i].name, items[i].value);
+          }
+        } catch(e) {
+          console.error("Local Storage Injection Failed:", e);
         }
         true;
       `;
       
       setInjectedJS(jsCode);
-
-      setStatus('✅ اطلاعات آماده شد، در حال انتقال...');
+      setStatus('✅ اطلاعات با موفقیت پردازش شد...');
       
       setTimeout(() => {
         setLoadWebView(true);
         setIsInjecting(false);
         setStatus('');
-      }, 500);
+      }, 600);
 
     } catch (error) {
       setStatus('❌ خطا: ' + error.message);
@@ -143,8 +143,7 @@ const App = () => {
 
           <WebView
             ref={webviewRef}
-            // باز کردن یک مسیر امن جهت تزریق و سپس پرش خودکار به پروفایل
-            source={{ uri: 'https://www.okala.com/?authSetup=true' }}
+            source={{ uri: 'https://www.okala.com/profile' }}
             injectedJavaScriptBeforeContentLoaded={injectedJS}
             sharedCookiesEnabled={true}
             thirdPartyCookiesEnabled={true}
