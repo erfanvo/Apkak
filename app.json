@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "LinkMaker",
+    "slug": "linkmaker",
+    "version": "1.0.0",
+    "android": {
+      "package": "com.erfantaghinezhad.linkmaker"
+    }
+  }
+}
